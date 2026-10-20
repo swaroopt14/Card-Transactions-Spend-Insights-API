@@ -1,4 +1,11 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
   db:
     image: postgres:16
     environment:
@@ -14,10 +21,13 @@ services:
     build: .
     depends_on:
       db: { condition: service_healthy }
+      redis: { condition: service_healthy }
     environment:
       DB_URL: jdbc:postgresql://db:5432/spenddb
       DB_USER: spend
       DB_PASSWORD: ${POSTGRES_PASSWORD:-localdevonly}
+      NETWORK_STATE: redis
+      REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-change-this-local-dev-secret-to-32plus-chars}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}

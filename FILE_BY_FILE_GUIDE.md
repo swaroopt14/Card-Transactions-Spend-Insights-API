@@ -36,7 +36,7 @@ Package root: `com.swaroop.spendinsights`. Read this after you have run the app 
 
 1. One purchase.
 2. History, fraud flags, and the monthly report all read this table.
-3. Constructor sets card, amount, merchant, category, and time. `flag(reason)` sets `flagged` and `flagReason`. Getters expose the columns.
+3. Constructor sets card, amount, merchant, category, and time. `flag(reason)` sets `flagged` and `flagReason`. `applyClearing` stores the synchronous decision plus time delta, place change, and high-risk category. Getters expose the columns.
 4. `@Index` on `(card_id, occurred_at)` supports history and the velocity count. Category is stored as a string enum.
 5. `TransactionService` builds it, then the repository saves it.
 6. `CardTransactionTest.flagSetsFlaggedAndReason`.
@@ -116,7 +116,7 @@ Package root: `com.swaroop.spendinsights`. Read this after you have run the app 
 
 1. Decides which rule names apply.
 2. Rules change more often than HTTP code, and they must be testable without Tomcat.
-3. `evaluate(card, amount, at)` returns a list, possibly empty. Order is `HIGH_AMOUNT`, then `OVER_LIMIT`, then `VELOCITY`.
+3. `evaluate(...)` returns `FraudAssessment` with reasons, `riskScore`, and `stepUpSuggested`. Order is `HIGH_AMOUNT`, `OVER_LIMIT`, `OVER_BALANCE`, `VELOCITY`, `GEO_VELOCITY`, `REPEAT_RISK`, `RISK_COHORT`, `STEP_UP`.
 4. `@Component`. Thresholds come from `@Value`.
 5. `TransactionService.record` calls it after the card is locked and before `save`.
 6. `FraudRuleEngineTest` (no web server) and the HTTP fraud test.
@@ -126,19 +126,35 @@ Rule boundaries:
 
 - `HIGH_AMOUNT`: `amount > high-amount-threshold`. Equal is clean.
 - `OVER_LIMIT`: `amount > card.creditLimit`. Equal is clean.
+- `OVER_BALANCE`: saved total on that card plus this amount is `> card.creditLimit`. One purchase equal to the limit is clean. The next one that crosses the running total is flagged. The row is still saved.
 - `VELOCITY`: count of rows already in `[at - velocity-window-seconds, at]` is `>= max-txn-per-minute`. Default window 60 seconds, default count 5. The current purchase is not in the count yet.
+- `GEO_VELOCITY`: a named place differs from another named place on that card inside `geo-window-minutes`. A blank place skips the rule. The row is still saved.
+- `REPEAT_RISK`: a flagged row already exists inside `repeat-flag-hours`, and this amount is greater than `high-amount-threshold * repeat-limit-factor`. Default line is 10000.
+- `RISK_COHORT`: prior flag in the window, and the category is in `high-risk-categories` (default `ENTERTAINMENT,OTHER`).
+- `STEP_UP`: prior flag in the window, and amount is greater than `step-up-amount` (default 5000). The weight counts toward `riskScore`. A score of 70 or more holds the purchase until the step-up code matches.
+- Card create also writes `accountReferenceId` (UUID) and `cardToken` (`SHA-256` of pepper, owner email, card id, last4, reference). Never a PAN or CVV.
 
 ## service/TransactionService.java
 
 1. Record a purchase and read history.
 2. This is the use-case the interview will ask you to trace.
-3. `record` applies the timestamp policy, locks the owned card, rejects a blocked card, evaluates fraud, flags when the list is not empty, and calls `save` once. `list` validates `page >= 0` and `size >= 1`, caps size at 100, checks ownership, and returns `TransactionPage`. `flagged` returns flagged rows for the admin controller. `toDto` maps the entity.
-4. `@Transactional` on `record`. The lock and the insert commit or roll back together. There is no retry loop, so a failure does not insert twice. A client that sends the same POST again does create a second row.
+3. `record` applies the timestamp policy, locks the owned card, rejects a blocked card, evaluates fraud, and stores the clearing decision. A score under 70 saves the row, including a flag. A score of 70 or more opens a step-up challenge and does not save the row until `verifyStepUp` gets the matching code. After a successful save it publishes `PurchaseCleared`. `list` validates `page >= 0` and `size >= 1`, caps size at 100, checks ownership, and returns `TransactionPage`. `flagged` returns flagged rows for the admin controller. `toDto` maps the entity. The decision is `STEP_UP` when that rule fired, otherwise `FLAGGED` when any rule fired, otherwise `AUTHORIZED`.
+4. `@Transactional` on `record`. The lock, the purchase insert, and the idempotency row commit or roll back together. There is no server retry loop. A failed request does not store the key, so the client may send that same key again. A second POST with no key does create a second row. The same key and the same body return the original row with 200. The same key and a different body return 409.
 5. `CardController` and `AdminController`.
-6. `ApiAcceptanceTest` transaction, timestamp, velocity, and history tests.
-7. Interview: walk the path. Filter checks the JWT, controller reads `auth.getName()`, service checks the owner, engine returns rule names, repository inserts, controller returns 201.
+6. `ApiAcceptanceTest` transaction, timestamp, velocity, history, and idempotency tests.
+7. Interview: walk the path. `RequestIdFilter` sets `X-Request-Id`. `IdempotencyKeyFilter` echoes `Idempotency-Key` when the client sent one. The JWT filter checks the token. The controller reads `auth.getName()`. The service checks a prior key, then the owner, then the engine. The repository inserts. A new purchase returns 201. The key is not in the JSON.
 
 Timestamp policy: null `occurredAt` becomes `Instant.now()` in UTC. A value more than 5 minutes ahead is 400. Five minutes or less ahead is accepted. Any past instant is accepted.
+
+## service/BehavioralLoop.java
+
+1. Write the after-commit copy of a purchase.
+2. The purchase must already be committed before this row exists. This class does not authorize, decline, or call a card network.
+3. `onCleared` listens for `PurchaseCleared` with `AFTER_COMMIT`, then inserts one `BehavioralSignal` in a new transaction. A second event for the same purchase is ignored. A failure is logged and does not change the HTTP response.
+4. The listener is a Spring bean. The insert uses `REQUIRES_NEW`, so it is not part of the purchase transaction.
+5. `TransactionService` publishes the event. `BehavioralSignalRepository` stores the row.
+6. `secondPurchaseKeepsTheRowAndStoresClearingFactsAfterCommit`.
+7. Interview: why not write this row inside `record`? The ledger decision and the review copy are different jobs. If the review insert fails, the purchase that already committed stays committed.
 
 ## service/InsightsService.java
 
@@ -324,8 +340,20 @@ Timestamp policy: null `occurredAt` becomes `Instant.now()` in UTC. A value more
 
 Interview: what is the difference between a unit test and an integration test? `FraudRuleEngineTest` does not start Spring. `SpendInsightsIntegrationTest` starts the app, the database, and the filter chain, and calls HTTP.
 
+## What was added so this does not stop at curl
+
+`src/main/resources/static/` is the ledger page. It is public. It never asks for a full card number. It posts the same JSON the API already accepted, and it sends a fresh `Idempotency-Key` on every purchase.
+
+`IdempotencyRecord` plus `IdempotencyRepository` remember one successful purchase for one customer and one key. The row stores the owner email, the key, a SHA-256 of the request, and the transaction id. `TransactionService.record` returns `PostedTransaction`. A repeat is `replayed=true` and the controller answers 200. A different body for that key is 409. `IdempotencyRace` covers two requests inserting the same key together: the loser rolls back and reads the winner. A blocked card, a bad body, or a timestamp too far ahead throws before that row is written, so the key stays unused. The server does not retry.
+
+`IdempotencyKeyFilter` copies `Idempotency-Key` onto the response whenever the client sent one, including 400, 409, and 422. It does not invent a key. The JSON body stays the purchase or the `ErrorResponse`.
+
+`RequestIdFilter` sets `X-Request-Id` and puts it on the log line as `requestId`. That header is a trace id, not the idempotency key.
+
+Interview question: where does the card come from? Not from this service. An issuer creates the card. This system stores the reference the issuer is willing to share: last four, name, limit, status. The page is that intake. It is not a checkout form and it is not PCI evidence.
+
 ## How to practise the interview
 
 Say this in your own words, and only the parts you have run:
 
-I built a card transactions and spend insights API with Java 17 and Spring Boot. Users register and log in. Passwords are BCrypt hashes. Sessions are JWTs. Cards store the last four digits. A purchase is checked for a high amount, the card limit, and how many purchases landed in the last minute. Those hits are saved as flags. A blocked card is rejected with 422. Monthly spend is a JPQL `GROUP BY` over a half-open UTC month, scoped to the logged-in user. Another user's card id returns 404. Admins, and only admins, can list flagged transactions.
+I built a card transactions and spend insights API with Java 17 and Spring Boot. Users register and log in. Passwords are BCrypt hashes. Sessions are JWTs. Cards store the last four digits. A purchase is checked for a high amount, the card limit, and how many purchases landed in the last minute. Those hits are saved as flags. A blocked card is rejected with 422. An optional `Idempotency-Key` maps to one successful purchase. The same key and body return that purchase with 200. A failed request does not keep the key, and the server does not retry it. The key is echoed as a response header and is not in the JSON. Monthly spend is a JPQL `GROUP BY` over a half-open UTC month, scoped to the logged-in user. Another user's card id returns 404. Admins, and only admins, can list flagged transactions.

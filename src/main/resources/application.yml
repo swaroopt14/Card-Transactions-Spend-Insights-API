@@ -9,6 +9,9 @@ spring:
     hibernate:
       ddl-auto: update
     open-in-view: false
+logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{requestId}] %logger{36} - %msg%n"
 server:
   error:
     include-message: never
@@ -27,3 +30,26 @@ app:
     max-txn-per-minute: 5
     # Inclusive window [occurredAt - window, occurredAt], in seconds. Default is one minute.
     velocity-window-seconds: 60
+    # A different place inside this many minutes is GEO_VELOCITY. Same place is clean.
+    geo-window-minutes: 60
+    # After a flagged purchase, a later amount above 20% of the high-amount threshold is REPEAT_RISK.
+    repeat-flag-hours: 72
+    repeat-limit-factor: 0.20
+    # After a prior flag, amounts above this suggest a network step-up challenge.
+    step-up-amount: 5000
+    # Categories treated as high-risk while the card is in the flagged-once cohort.
+    high-risk-categories: ENTERTAINMENT,OTHER
+    # Pepper for the card reference fingerprint. Override in real deployments.
+    token-pepper: ${CARD_TOKEN_PEPPER:${JWT_SECRET:dev-only-secret-change-me-please-32chars-min}}
+  network:
+    # memory keeps velocity and dynamic CVV in this process. redis uses REDIS_URL.
+    state: ${NETWORK_STATE:memory}
+    redis-url: ${REDIS_URL:}
+    # A rule score at or above this holds authorization for step-up. Below it, the row is written.
+    authorize-threshold: 70
+    # Hard stop in the prevention layer. The fraud VELOCITY flag is a lower, separate count.
+    velocity-block: 30
+    velocity-window-seconds: 60
+    dynamic-cvv-seconds: 60
+    step-up-ttl-seconds: 300
+    clearing-budget-ms: 50

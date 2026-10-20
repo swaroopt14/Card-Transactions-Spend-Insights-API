@@ -173,7 +173,7 @@ Done and covered by the 30 tests in `TEST_REPORT.md`:
 
 Still open, on purpose:
 
-- Flyway, refresh tokens, rate limiting, idempotency keys, Testcontainers against real PostgreSQL, Kafka for flagged events.
+- Flyway, refresh tokens, rate limiting, a required idempotency key, Testcontainers against real PostgreSQL, Kafka for flagged events. An optional `Idempotency-Key` is already honored.
 - Docker image and PostgreSQL were not started here. `docker compose config` only parsed the file.
 - A finished GitHub Actions run had not been observed when this section was written.
 

@@ -33,6 +33,7 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable) // stateless JWT API, no cookies
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(a -> a
+                .requestMatchers("/", "/index.html", "/app.js", "/app.css", "/favicon.ico").permitAll()
                 .requestMatchers("/api/v1/auth/**", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/h2-console/**").permitAll()
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated())

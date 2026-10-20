@@ -3,7 +3,9 @@ package com.swaroop.spendinsights;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.swaroop.spendinsights.domain.*;
+import com.swaroop.spendinsights.domain.BehavioralSignal;
 import com.swaroop.spendinsights.repository.AppUserRepository;
+import com.swaroop.spendinsights.repository.BehavioralSignalRepository;
 import com.swaroop.spendinsights.repository.CardRepository;
 import com.swaroop.spendinsights.repository.CardTransactionRepository;
 import com.swaroop.spendinsights.security.JwtService;
@@ -31,6 +33,8 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -44,6 +48,7 @@ class ApiAcceptanceTest {
     @Autowired AppUserRepository users;
     @Autowired CardRepository cards;
     @Autowired CardTransactionRepository txns;
+    @Autowired BehavioralSignalRepository signals;
     @Autowired PasswordEncoder encoder;
     @Autowired JwtService jwt;
     @Value("${app.jwt.secret}") String jwtSecret;
@@ -147,16 +152,25 @@ class ApiAcceptanceTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("BLOCKED"));
         mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .header("Idempotency-Key", "blocked-key-01")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(txn("10.00", "Cafe", "DINING", "2026-04-02T10:00:00Z")))
                 .andExpect(status().isUnprocessableEntity())
+                .andExpect(header().string("Idempotency-Key", "blocked-key-01"))
                 .andExpect(jsonPath("$.message").value("Card is blocked"));
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .header("Idempotency-Key", "blocked-key-01")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(txn("10.00", "Cafe", "DINING", "2026-04-02T10:00:00Z")))
+                .andExpect(status().isUnprocessableEntity());
         mvc.perform(patch("/api/v1/cards/" + cardId + "/unblock").header("Authorization", token))
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
         mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .header("Idempotency-Key", "blocked-key-01")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(txn("10.00", "Cafe", "DINING", "2026-04-02T10:00:00Z")))
                 .andExpect(status().isCreated())
+                .andExpect(header().string("Idempotency-Key", "blocked-key-01"))
                 .andExpect(jsonPath("$.flagged").value(false));
     }
 
@@ -183,12 +197,24 @@ class ApiAcceptanceTest {
         mvc.perform(post("/api/v1/cards/" + tight + "/transactions").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(txn("45000", "Hotel", "TRAVEL", "2026-05-03T10:00:00Z")))
-                .andExpect(jsonPath("$.flagReason").value("OVER_LIMIT"));
+                .andExpect(jsonPath("$.flagReason").value("OVER_LIMIT,OVER_BALANCE"));
 
-        mvc.perform(post("/api/v1/cards/" + tight + "/transactions").header("Authorization", token)
+        MvcResult held = mvc.perform(post("/api/v1/cards/" + tight + "/transactions").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(txn("60000", "Airline", "TRAVEL", "2026-05-04T10:00:00Z")))
-                .andExpect(jsonPath("$.flagReason").value("HIGH_AMOUNT,OVER_LIMIT"));
+                .andExpect(status().isAccepted())
+                .andExpect(header().string("X-Clearing-Budget-Ms", "50"))
+                .andExpect(jsonPath("$.status").value("STEP_UP_REQUIRED"))
+                .andExpect(jsonPath("$.reasons").value("HIGH_AMOUNT,OVER_LIMIT,OVER_BALANCE,REPEAT_RISK,STEP_UP"))
+                .andReturn();
+        long challengeId = json(held).get("challengeId").asLong();
+        String code = json(held).get("challengeCode").asText();
+        mvc.perform(post("/api/v1/cards/" + tight + "/step-up/" + challengeId).header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"challengeCode\":\"" + code + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagReason").value("HIGH_AMOUNT,OVER_LIMIT,OVER_BALANCE,REPEAT_RISK,STEP_UP"))
+                .andExpect(jsonPath("$.merchant").value("Airline"));
 
         mvc.perform(post("/api/v1/cards/" + wide + "/transactions").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -353,6 +379,231 @@ class ApiAcceptanceTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void purchaseThatCrossesTheRunningLimitIsFlaggedAndKeepsItsChannel() throws Exception {
+        String token = bearer(email("balance"));
+        long cardId = createCard(token, "4312", "Silver", "400000");
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(txn("400000.00", "Store", "OTHER", "2026-10-02T10:00:00Z")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagReason").value("HIGH_AMOUNT"))
+                .andExpect(jsonPath("$.channel").value("API"));
+        MvcResult held = mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":400000.00,\"merchant\":\"Flipkart\",\"category\":\"UTILITIES\",\"occurredAt\":\"2026-10-03T10:00:00Z\",\"channel\":\"FLIPKART\"}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.reasons").value("HIGH_AMOUNT,OVER_BALANCE,REPEAT_RISK,STEP_UP"))
+                .andReturn();
+        mvc.perform(post("/api/v1/cards/" + cardId + "/step-up/" + json(held).get("challengeId").asLong())
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"challengeCode\":\"" + json(held).get("challengeCode").asText() + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagged").value(true))
+                .andExpect(jsonPath("$.flagReason").value("HIGH_AMOUNT,OVER_BALANCE,REPEAT_RISK,STEP_UP"))
+                .andExpect(jsonPath("$.channel").value("FLIPKART"));
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":50.00,\"merchant\":\"Cafe\",\"category\":\"DINING\",\"occurredAt\":\"2026-10-04T10:00:00Z\",\"channel\":\"PHONE\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagReason").value("OVER_BALANCE"))
+                .andExpect(jsonPath("$.channel").value("PHONE"));
+    }
+
+    @Test
+    void cardCreateReturnsAccountReferenceAndDeterministicCardToken() throws Exception {
+        String token = bearer(email("token"));
+        MvcResult created = mvc.perform(post("/api/v1/cards").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"last4\":\"7777\",\"nickname\":\"Token\",\"creditLimit\":20000}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.accountReferenceId").isNotEmpty())
+                .andExpect(jsonPath("$.cardToken").isString())
+                .andReturn();
+        String cardToken = om.readTree(created.getResponse().getContentAsString()).get("cardToken").asText();
+        assertThat(cardToken).hasSize(64);
+    }
+
+    @Test
+    void flaggedOnceHighRiskCategoryIsMarkedRiskCohortAndKeepsTheRow() throws Exception {
+        String token = bearer(email("cohort"));
+        long cardId = createCard(token, "8888", "Risk", "100000");
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(txn("60000", "Airline", "TRAVEL", "2026-08-01T10:00:00Z")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagReason").value("HIGH_AMOUNT"));
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(txn("6000", "Casino", "ENTERTAINMENT", "2026-08-02T10:00:00Z")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagged").value(true))
+                .andExpect(jsonPath("$.flagReason").value("RISK_COHORT,STEP_UP"))
+                .andExpect(jsonPath("$.stepUpSuggested").value(true))
+                .andExpect(jsonPath("$.clearingDecision").value("STEP_UP"))
+                .andExpect(jsonPath("$.riskScore").value(45))
+                .andExpect(jsonPath("$.accountReferenceId").isNotEmpty())
+                .andExpect(jsonPath("$.cardToken").isNotEmpty());
+    }
+
+    @Test
+    void aDifferentPlaceInsideTheHourIsFlaggedAndTheRowIsStillSaved() throws Exception {
+        String token = bearer(email("geo"));
+        long cardId = createCard(token, "9090", "Travel", "100000");
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":100.00,\"merchant\":\"Cafe\",\"category\":\"DINING\",\"occurredAt\":\"2026-07-01T10:00:00Z\",\"location\":\"Mumbai\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagged").value(false))
+                .andExpect(jsonPath("$.location").value("Mumbai"));
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":120.00,\"merchant\":\"Shop\",\"category\":\"SHOPPING\",\"occurredAt\":\"2026-07-01T10:20:00Z\",\"location\":\"New York\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagged").value(true))
+                .andExpect(jsonPath("$.flagReason").value("GEO_VELOCITY"))
+                .andExpect(jsonPath("$.location").value("New York"));
+    }
+
+    @Test
+    void repeatedIdempotencyKeyReturnsTheOriginalPurchase() throws Exception {
+        String token = bearer(email("idem"));
+        long cardId = createCard(token, "2468", "Ledger", "100000");
+        String body = txn("18.00", "Paper", "SHOPPING", "2026-04-04T10:00:00Z");
+        MvcResult first = mvc.perform(post("/api/v1/cards/" + cardId + "/transactions")
+                        .header("Authorization", token)
+                        .header("Idempotency-Key", "ledger-key-01")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(header().exists("X-Request-Id"))
+                .andExpect(header().string("Idempotency-Key", "ledger-key-01"))
+                .andExpect(jsonPath("$.idempotencyKey").doesNotExist())
+                .andReturn();
+        long id = om.readTree(first.getResponse().getContentAsString()).get("id").asLong();
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions")
+                        .header("Authorization", token)
+                        .header("Idempotency-Key", "ledger-key-01")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Idempotency-Key", "ledger-key-01"))
+                .andExpect(jsonPath("$.id").value(id));
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions")
+                        .header("Authorization", token)
+                        .header("Idempotency-Key", "ledger-key-01")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(txn("19.00", "Other", "SHOPPING", "2026-04-04T10:00:00Z")))
+                .andExpect(status().isConflict())
+                .andExpect(header().string("Idempotency-Key", "ledger-key-01"))
+                .andExpect(jsonPath("$.message").value("This Idempotency-Key was already used for a different request"));
+    }
+
+    @Test
+    void secondPurchaseKeepsTheRowAndStoresClearingFactsAfterCommit() throws Exception {
+        String token = bearer(email("layers"));
+        long cardId = createCard(token, "4242", "Layers", "100000.00");
+        postTxn(token, cardId, placed("100.00", "Cafe", "DINING", "2026-04-01T10:00:00Z", "Mumbai"), false);
+        MvcResult second = mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(placed("350.00", "Market", "OTHER", "2026-04-01T10:08:20Z", "Pune")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagged").value(true))
+                .andExpect(jsonPath("$.flagReason").value("GEO_VELOCITY"))
+                .andExpect(jsonPath("$.clearingDecision").value("FLAGGED"))
+                .andExpect(jsonPath("$.amount").value(350.00))
+                .andExpect(jsonPath("$.timeDeltaSeconds").value(500))
+                .andExpect(jsonPath("$.placeChanged").value(true))
+                .andExpect(jsonPath("$.highRiskCategory").value(1))
+                .andReturn();
+        long id = json(second).get("id").asLong();
+        BehavioralSignal signal = signals.findByTransactionId(id).orElseThrow();
+        assertThat(signal.getAmount()).isEqualByComparingTo("350.00");
+        assertThat(signal.getTimeDeltaSeconds()).isEqualTo(500L);
+        assertThat(signal.isPlaceChanged()).isTrue();
+        assertThat(signal.getHighRiskCategory()).isEqualTo(1);
+        assertThat(signal.getDecision()).isEqualTo("FLAGGED");
+        assertThat(signal.getReason()).isEqualTo("GEO_VELOCITY");
+        assertThat(signal.getOutcome()).isEqualTo("CLEARED");
+    }
+
+    @Test
+    void edgeStripsPanAndAHighScoreWaitsForStepUp() throws Exception {
+        String token = bearer(email("edge"));
+        long cardId = createCard(token, "2222", "Edge", "40000");
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":10.00,\"merchant\":\"Cafe\",\"category\":\"DINING\",\"occurredAt\":\"2026-03-01T10:00:00Z\",\"pan\":\"4111111111112222\",\"cvv\":\"123\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.merchant").value("Cafe"));
+        String created = mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":10.00,\"merchant\":\"Cafe\",\"category\":\"DINING\",\"occurredAt\":\"2026-03-01T10:05:00Z\",\"pan\":\"4111111111112222\"}"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(created).doesNotContain("4111111111112222");
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":12.00,\"merchant\":\"Shop\",\"category\":\"SHOPPING\",\"pan\":\"4111111111119999\"}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.message").value("PAN does not match this card reference"));
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":12.00,\"merchant\":\"Shop\",\"category\":\"SHOPPING\",\"pan\":\"12\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("PAN must be 13 to 19 digits"));
+
+        String cvv = json(mvc.perform(post("/api/v1/cards/" + cardId + "/dynamic-cvv").header("Authorization", token))
+                .andExpect(status().isOk()).andReturn()).get("dynamicCvv").asText();
+        String wrong = "000".equals(cvv) ? "001" : "000";
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":15.00,\"merchant\":\"Book\",\"category\":\"SHOPPING\",\"dynamicCvv\":\"" + wrong + "\"}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.message").value("Dynamic CVV does not match"));
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":15.00,\"merchant\":\"Book\",\"category\":\"SHOPPING\",\"dynamicCvv\":\"" + cvv + "\"}"))
+                .andExpect(status().isCreated());
+
+        mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(txn("60000", "FlagAir", "TRAVEL", "2026-03-02T10:00:00Z")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.flagged").value(true));
+        MvcResult held = mvc.perform(post("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(txn("60000", "HoldAir", "TRAVEL", "2026-03-03T10:00:00Z")))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.method").value("BIOMETRIC_STEP_UP"))
+                .andExpect(jsonPath("$.riskScore").value(100))
+                .andReturn();
+        long challengeId = json(held).get("challengeId").asLong();
+        String wrongCode = "000000".equals(json(held).get("challengeCode").asText()) ? "000001" : "000000";
+        mvc.perform(get("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token))
+                .andExpect(jsonPath("$.content[?(@.merchant == 'HoldAir')]").isEmpty());
+        mvc.perform(post("/api/v1/cards/" + cardId + "/step-up/" + challengeId).header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"challengeCode\":\"" + wrongCode + "\"}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.message").value("Step-up challenge was not verified"));
+        mvc.perform(get("/api/v1/cards/" + cardId + "/transactions").header("Authorization", token))
+                .andExpect(jsonPath("$.content[?(@.merchant == 'HoldAir')]").isEmpty());
+        MvcResult verified = mvc.perform(post("/api/v1/cards/" + cardId + "/step-up/" + challengeId).header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"challengeCode\":\"" + json(held).get("challengeCode").asText() + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.merchant").value("HoldAir"))
+                .andReturn();
+        BehavioralSignal signal = signals.findByTransactionId(json(verified).get("id").asLong()).orElseThrow();
+        assertThat(signal.getOutcome()).isEqualTo("STEP_UP_VERIFIED");
+    }
+
+    @Test
+    void ledgerPageIsPublic() throws Exception {
+        mvc.perform(get("/"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("index.html"));
+    }
+
     private String email(String prefix) { return prefix + "-" + UUID.randomUUID() + "@x.com"; }
 
     private String creds(String email) { return "{\"email\":\"" + email + "\",\"password\":\"" + PASSWORD + "\"}"; }
@@ -376,6 +627,11 @@ class ApiAcceptanceTest {
 
     private String txn(String amount, String merchant, String category, String at) {
         return "{\"amount\":" + amount + ",\"merchant\":\"" + merchant + "\",\"category\":\"" + category + "\",\"occurredAt\":\"" + at + "\"}";
+    }
+
+    private String placed(String amount, String merchant, String category, String at, String location) {
+        return "{\"amount\":" + amount + ",\"merchant\":\"" + merchant + "\",\"category\":\"" + category
+                + "\",\"occurredAt\":\"" + at + "\",\"location\":\"" + location + "\"}";
     }
 
     private void postTxn(String bearer, long cardId, String json, boolean flagged) throws Exception {

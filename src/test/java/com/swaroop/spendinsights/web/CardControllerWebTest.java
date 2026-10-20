@@ -4,6 +4,7 @@ import com.swaroop.spendinsights.security.JwtAuthFilter;
 import com.swaroop.spendinsights.security.JwtService;
 import com.swaroop.spendinsights.security.SecurityConfig;
 import com.swaroop.spendinsights.service.CardService;
+import com.swaroop.spendinsights.service.NetworkGuard;
 import com.swaroop.spendinsights.service.TransactionService;
 import com.swaroop.spendinsights.web.dto.Dtos.CardResponse;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,7 @@ class CardControllerWebTest {
     @Autowired MockMvc mvc;
     @MockBean CardService cards;
     @MockBean TransactionService txns;
+    @MockBean NetworkGuard network;
 
     @Test
     void rejectsAnonymousRequests() throws Exception {
@@ -35,7 +37,8 @@ class CardControllerWebTest {
     @Test
     @WithMockUser(username = "me@x.com")
     void listsMyCards() throws Exception {
-        when(cards.list("me@x.com")).thenReturn(List.of(new CardResponse(1L, "1234", "Main", new BigDecimal("50000"), "ACTIVE")));
+        when(cards.list("me@x.com")).thenReturn(List.of(new CardResponse(1L, "1234", "Main", new BigDecimal("50000"), "ACTIVE",
+                "ref-1", "a".repeat(64))));
         mvc.perform(get("/api/v1/cards"))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].last4").value("1234"));

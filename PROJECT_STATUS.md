@@ -61,7 +61,7 @@ The skeleton already had entities, repositories, JWT auth, card and transaction 
 ## Still not done
 
 - No Flyway migrations. Schema updates still come from Hibernate `ddl-auto`.
-- No idempotency key. A client that retries a successful POST creates a second transaction. The server itself does not retry the insert.
+- Idempotency is optional. With no `Idempotency-Key`, a retry of a successful POST creates a second transaction. With a key, one successful purchase is remembered per user. A failed request does not store the key, and the server does not retry the insert. The key is echoed on the response header and is not part of the JSON body. Making the key required, and expiring old keys, is still open.
 - Email match is case-sensitive.
 - Admin flagged list is not paginated.
 - PostgreSQL and the Docker image were not started in this session. `docker compose config` only checked that the Compose file parses.

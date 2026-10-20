@@ -13,3 +13,17 @@ app:
     high-amount-threshold: 50000
     max-txn-per-minute: 5
     velocity-window-seconds: 60
+    geo-window-minutes: 60
+    repeat-flag-hours: 72
+    repeat-limit-factor: 0.20
+    step-up-amount: 5000
+    high-risk-categories: ENTERTAINMENT,OTHER
+    token-pepper: test-token-pepper
+  network:
+    state: memory
+    authorize-threshold: 70
+    velocity-block: 30
+    velocity-window-seconds: 60
+    dynamic-cvv-seconds: 60
+    step-up-ttl-seconds: 300
+    clearing-budget-ms: 50
