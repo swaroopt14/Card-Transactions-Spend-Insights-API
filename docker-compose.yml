@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: spenddb
+      POSTGRES_USER: spend
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdevonly}
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spend -d spenddb"]
+      interval: 5s
+      retries: 10
+  api:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/spenddb
+      DB_USER: spend
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-localdevonly}
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-dev-secret-to-32plus-chars}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    ports: ["8080:8080"]

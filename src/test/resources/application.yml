@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+app:
+  jwt:
+    secret: test-secret-test-secret-test-secret-123456
+    expiry-minutes: 5
+  fraud:
+    high-amount-threshold: 50000
+    max-txn-per-minute: 5

@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: spend-insights-api
+  datasource:
+    url: ${DB_URL:jdbc:h2:mem:spenddb;MODE=PostgreSQL}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+app:
+  jwt:
+    # Dev-only default. Override with JWT_SECRET (>= 32 chars) in real deployments.
+    secret: ${JWT_SECRET:dev-only-secret-change-me-please-32chars-min}
+    expiry-minutes: 60
+  fraud:
+    high-amount-threshold: 50000
+    max-txn-per-minute: 5
