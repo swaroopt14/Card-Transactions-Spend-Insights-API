@@ -28,11 +28,17 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         if (header != null && header.startsWith("Bearer ")) {
             try {
                 Claims c = jwt.parse(header.substring(7));
-                var auth = new UsernamePasswordAuthenticationToken(c.getSubject(), null,
-                        List.of(new SimpleGrantedAuthority("ROLE_" + c.get("role", String.class))));
-                SecurityContextHolder.getContext().setAuthentication(auth);
+                String email = c.getSubject();
+                String role = c.get("role", String.class);
+                if (email == null || email.isBlank() || (!"USER".equals(role) && !"ADMIN".equals(role))) {
+                    SecurityContextHolder.clearContext();
+                } else {
+                    var auth = new UsernamePasswordAuthenticationToken(email, null,
+                            List.of(new SimpleGrantedAuthority("ROLE_" + role)));
+                    SecurityContextHolder.getContext().setAuthentication(auth);
+                }
             } catch (JwtException | IllegalArgumentException e) {
-                SecurityContextHolder.clearContext(); // invalid token -> stays anonymous -> 401
+                SecurityContextHolder.clearContext(); // invalid or expired token -> anonymous -> 401
             }
         }
         chain.doFilter(req, res);

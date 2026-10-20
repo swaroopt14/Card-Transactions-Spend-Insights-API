@@ -5,7 +5,6 @@ import com.swaroop.spendinsights.service.CardService;
 import com.swaroop.spendinsights.service.TransactionService;
 import com.swaroop.spendinsights.web.dto.Dtos.*;
 import jakarta.validation.Valid;
-import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -44,7 +43,7 @@ public class CardController {
     }
 
     @GetMapping("/{id}/transactions")
-    public Page<TransactionResponse> listTxns(Authentication auth, @PathVariable Long id,
+    public TransactionPage listTxns(Authentication auth, @PathVariable Long id,
                                               @RequestParam(defaultValue = "0") int page,
                                               @RequestParam(defaultValue = "20") int size) {
         return txns.list(auth.getName(), id, page, size);

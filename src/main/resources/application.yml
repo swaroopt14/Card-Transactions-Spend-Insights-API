@@ -9,11 +9,21 @@ spring:
     hibernate:
       ddl-auto: update
     open-in-view: false
+server:
+  error:
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
 app:
   jwt:
     # Dev-only default. Override with JWT_SECRET (>= 32 chars) in real deployments.
     secret: ${JWT_SECRET:dev-only-secret-change-me-please-32chars-min}
     expiry-minutes: 60
   fraud:
+    # HIGH_AMOUNT fires only when amount is strictly greater than this value.
     high-amount-threshold: 50000
+    # Count of already-saved transactions inside the velocity window that triggers VELOCITY.
+    # The transaction being recorded is not counted until after the rules run.
     max-txn-per-minute: 5
+    # Inclusive window [occurredAt - window, occurredAt], in seconds. Default is one minute.
+    velocity-window-seconds: 60

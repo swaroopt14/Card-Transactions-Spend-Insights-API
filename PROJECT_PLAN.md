@@ -3,7 +3,7 @@
 
 **Why this project:** It hits the Amex ETS stack directly: Java, Spring Boot, REST API specs, SQL, JWT, testing, Git and Agile. It's a cards/payments domain, and it doesn't overlap with your reconciliation project.
 
-> Starter status: the skeleton in this folder **compiles, and all 8 tests pass** (`mvn verify` on JDK 21, targeting Java 17). Don't just upload it. Retype or extend each layer yourself so you can explain every line. Interviewers *will* ask you to walk through the code.
+> Starter status: the skeleton compiled and the original 8 tests passed. The follow-up pass filled the contract gaps (409 on duplicate email, timestamp policy, stable history page, fraud boundaries, JSON 401/403) and the suite is now 30 tests, 0 failures, on JDK 17. See `TEST_REPORT.md` and `FILE_BY_FILE_GUIDE.md`. Don't recite this file. Re-run `mvn test` and walk the two flows out loud.
 
 ---
 ## 1. Features
@@ -36,7 +36,7 @@
 | GET | `/api/v1/admin/flagged-transactions` | ADMIN | All flagged transactions |
 | GET | `/swagger-ui.html`, `/v3/api-docs` | public | API docs |
 
-Status codes: 400 for validation errors, 401 for no or invalid token, 403 for the wrong role, 404 for a missing card or one you don't own, and 422 for a business-rule violation.
+Status codes: 400 for validation errors, a bad month, a bad page, or a timestamp more than 5 minutes in the future. 401 for no or invalid token, or a bad login. 403 for the wrong role. 404 for a missing card or one you don't own. 409 when the email is already registered. 422 for a business-rule violation such as a blocked card.
 
 ## 3. DB schema (Hibernate generates it; the equivalent SQL is below)
 ```sql
@@ -158,6 +158,24 @@ Spend about 5–6 hours a day. Commit small and often, with messages like `feat:
     - Kafka events for flagged transactions
 
 Prep for likely questions: What is a Spring Bean, and what are its scopes? `@Component` vs `@Service` vs `@Repository`? What's the N+1 problem, and what does LAZY loading do? What are the HashMap internals? Explain OOP's 4 pillars using classes from this project. What does `equals`/`hashCode` mean for entities?
+
+## 8. Completed in the verification pass, and what is still open
+
+Done and covered by the 30 tests in `TEST_REPORT.md`:
+
+- Register, login, BCrypt, JWT subject and role, expired and forged tokens.
+- Duplicate email returns 409. A public register cannot grant ADMIN.
+- Cards, owner scoping, block and unblock, 422 on a blocked card.
+- Fraud boundaries for HIGH_AMOUNT, OVER_LIMIT, and VELOCITY, including the inclusive 60-second window.
+- History page with a stable `TransactionPage`, newest first, size capped at 100.
+- Monthly half-open UTC aggregation, empty month, invalid month, other users excluded, flagged rows included.
+- Admin route: 401 anonymous, 403 user, 200 admin, unflagged rows omitted. Admin seed comes from env vars.
+
+Still open, on purpose:
+
+- Flyway, refresh tokens, rate limiting, idempotency keys, Testcontainers against real PostgreSQL, Kafka for flagged events.
+- Docker image and PostgreSQL were not started here. `docker compose config` only parsed the file.
+- A finished GitHub Actions run had not been observed when this section was written.
 
 ## 7. Resume bullets (use ONLY after you've built and pushed it, with the GitHub link)
 **Card Transactions & Spend Insights API** | Java 17, Spring Boot 3, Spring Security (JWT), JPA, PostgreSQL, JUnit/Mockito, Docker, GitHub Actions | github.com/<your-handle>/spend-insights-api

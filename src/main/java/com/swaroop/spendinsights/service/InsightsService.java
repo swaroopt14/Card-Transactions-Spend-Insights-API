@@ -16,6 +16,11 @@ public class InsightsService {
 
     public InsightsService(CardTransactionRepository txns) { this.txns = txns; }
 
+    /**
+     * Half-open UTC month {@code [first instant of month, first instant of next month)}.
+     * Flagged transactions are included. Totals come from the database aggregation, not from
+     * loading every row into memory.
+     */
     @Transactional(readOnly = true)
     public MonthlySpendResponse monthly(String email, YearMonth month) {
         Instant from = month.atDay(1).atStartOfDay().toInstant(ZoneOffset.UTC);

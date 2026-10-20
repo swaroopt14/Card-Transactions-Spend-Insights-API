@@ -5,9 +5,11 @@ import com.swaroop.spendinsights.domain.Role;
 import com.swaroop.spendinsights.repository.AppUserRepository;
 import com.swaroop.spendinsights.security.JwtService;
 import com.swaroop.spendinsights.web.dto.Dtos.*;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AuthService {
@@ -19,10 +21,16 @@ public class AuthService {
         this.users = users; this.encoder = encoder; this.jwt = jwt;
     }
 
+    /** Public registration always creates a USER. A client cannot choose ADMIN. */
+    @Transactional
     public TokenResponse register(RegisterRequest req) {
-        if (users.existsByEmail(req.email())) throw new BusinessRuleException("Email already registered");
-        AppUser u = users.save(new AppUser(req.email(), encoder.encode(req.password()), Role.USER));
-        return token(u);
+        if (users.existsByEmail(req.email())) throw new ConflictException("Email already registered");
+        try {
+            AppUser u = users.saveAndFlush(new AppUser(req.email(), encoder.encode(req.password()), Role.USER));
+            return token(u);
+        } catch (DataIntegrityViolationException ex) {
+            throw new ConflictException("Email already registered");
+        }
     }
 
     public TokenResponse login(LoginRequest req) {

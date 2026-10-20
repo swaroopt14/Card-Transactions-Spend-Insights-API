@@ -37,6 +37,15 @@ public class CardService {
         return cards.findByIdAndOwnerEmail(cardId, email).orElseThrow(() -> new NotFoundException("Card not found"));
     }
 
+    /**
+     * Same ownership check as {@link #getOwned}, then locks the card row.
+     * Call this inside an existing write transaction before the velocity count.
+     */
+    public Card getOwnedForUpdate(String email, Long cardId) {
+        getOwned(email, cardId);
+        return cards.findByIdForUpdate(cardId).orElseThrow(() -> new NotFoundException("Card not found"));
+    }
+
     static CardResponse toDto(Card c) {
         return new CardResponse(c.getId(), c.getLast4(), c.getNickname(), c.getCreditLimit(), c.getStatus().name());
     }
